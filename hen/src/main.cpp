@@ -35,8 +35,6 @@ int kernel_main(void *td, struct args *args)
     // kdlsym assignments
     auto printf = (void (*)(const char *fmt, ...)) kdlsym(KERNEL_SYM_PRINTF);
 
-    pin_to_first_available_core();
-
     // Reset hooks before installing new ones
     printf("[HEN] Resetting hooks\n");
     for (int i = 0; i < HOOK_MAX; i++) {

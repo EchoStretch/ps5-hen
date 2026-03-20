@@ -17,7 +17,7 @@
 #define MAX_TMR             22
 #define MAX_SAVED_TMRS      8
 
-// vmcb offsets (amd svm spec, not fw-dependent)
+// vmcb offsets (amd svm spec)
 #define VMCB_INTERCEPT_CR   0x00
 #define VMCB_INTERCEPT_DR   0x04
 #define VMCB_INTERCEPT_EXC  0x08
@@ -26,6 +26,24 @@
 #define VMCB_TLB_CONTROL    0x58
 #define VMCB_VMCB_CLEAN     0x5C
 #define VMCB_NP_ENABLE      0x90
+
+#define VMCB_PATCH_SIZE     0x94
+
+// VMCB struct
+// Covers offsets 0x00–0x93
+struct vmcb_control_patch {
+    /* 0x00 */ uint32_t intercept_cr;
+    /* 0x04 */ uint32_t intercept_dr;
+    /* 0x08 */ uint32_t intercept_exc;
+    /* 0x0C */ uint32_t intercept_misc;
+    /* 0x10 */ uint32_t intercept_vmxx;
+    /* 0x14 */ uint8_t  _rsvd0[0x58 - 0x14];
+    /* 0x58 */ uint32_t tlb_control;
+    /* 0x5C */ uint32_t vmcb_clean;
+    /* 0x60 */ uint8_t  _rsvd1[0x90 - 0x60];
+    /* 0x90 */ uint32_t np_enable;
+};
+static_assert(sizeof(vmcb_control_patch) == VMCB_PATCH_SIZE);
 
 #define MAX_VMCBS           16
 
