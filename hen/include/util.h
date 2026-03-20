@@ -4,6 +4,9 @@
 
 #include <sys/types.h>
 
+typedef struct _cpuset cpuset_t;
+extern "C" int cpuset_setaffinity(int level, int which, long id, size_t setsize, const cpuset_t *mask);
+
 uint64_t get_dmap_addr(uint64_t pa);
 
 void *find_proc_by_name(const char *name);
