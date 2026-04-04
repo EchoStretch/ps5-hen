@@ -72,7 +72,8 @@ struct hv_defeat_ctx {
 int stage0_discover(hv_defeat_ctx *ctx);
 int stage1_tmr_relax(hv_defeat_ctx *ctx);
 int stage2_find_vmcbs(hv_defeat_ctx *ctx);
-int stage3_patch_vmcbs(hv_defeat_ctx *ctx);
+int stage3_patch_vmcbs(hv_defeat_ctx *ctx, struct iommu_ctx *iommu);
+int iommu_selftest(struct iommu_ctx *iommu, uint64_t dmap);
 int stage3b_remove_xotext(hv_defeat_ctx *ctx);
 int stage4_verify(hv_defeat_ctx *ctx);
 int stage5_patch_kernel(hv_defeat_ctx *ctx);

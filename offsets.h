@@ -209,6 +209,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0200_PPR_SYSENT",              0x1CE6D10},
     {"0200_GADGET_JMP_PTR_RSI",      0x0042000},
     {"0200_SMP_RENDEZVOUS",          0x9EFD90},
+    {"0200_IOMMU_SOFTC",             0x425D718},
     // 2.00 uses GPU DMA, no A53 offsets
 
     // FW 2.20
@@ -353,6 +354,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0300_KERNEL_OFF_CODE_CAVE",    0x0044000},
     {"0300_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0300_A53_MDBG_BL_VA",      0x109854},
+    {"0300_IOMMU_SOFTC",         0x33175E0},
     {"0300_A53_GET_VERSION_VA",  0x110854},  // sdbgp_get_version
 
     // FW 3.10
@@ -377,6 +379,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0310_KERNEL_OFF_CODE_CAVE",    0x0044000},
     {"0310_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0310_A53_MDBG_BL_VA",      0x109854},
+    {"0310_IOMMU_SOFTC",         0x33175E0},
     {"0310_A53_GET_VERSION_VA",  0x110854},
 
     // FW 3.20
@@ -401,6 +404,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0320_KERNEL_OFF_CODE_CAVE",    0x0044000},
     {"0320_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0320_A53_MDBG_BL_VA",      0x109854},
+    {"0320_IOMMU_SOFTC",         0x33175E0},
     {"0320_A53_GET_VERSION_VA",  0x110854},
 
     // FW 3.21
@@ -425,6 +429,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0321_KERNEL_OFF_CODE_CAVE",    0x0044000},
     {"0321_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0321_A53_MDBG_BL_VA",      0x109854},
+    {"0321_IOMMU_SOFTC",         0x33175E0},
     {"0321_A53_GET_VERSION_VA",  0x110854},
 
     // FW 4.00
@@ -449,6 +454,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0400_PPR_SYSENT",        0x0D709C0},  // untested
     {"0400_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0400_A53_MDBG_BL_VA",      0x109854},
+    {"0400_IOMMU_SOFTC",         0x33C7680},
     {"0400_A53_GET_VERSION_VA",  0x110288},
 
     // FW 4.02
@@ -473,6 +479,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0402_PPR_SYSENT",        0x0D709C0},  // untested
     {"0402_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0402_A53_MDBG_BL_VA",      0x109854},
+    {"0402_IOMMU_SOFTC",         0x33C7680},
     {"0402_A53_GET_VERSION_VA",  0x110288},
 
     // FW 4.03
@@ -492,6 +499,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0403_PPR_SYSENT",        0x0D709C0},
     {"0403_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0403_A53_MDBG_BL_VA",      0x109854},
+    {"0403_IOMMU_SOFTC",         0x33C7680},
     {"0403_A53_GET_VERSION_VA",  0x110288},
     {"0403_VMSPACE_VM_VMID",     0x1E4},
     {"0403_VMSPACE_VM_PMAP",     0x1D0},
@@ -518,9 +526,10 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0450_PMAP_PM_CR3",         0x028},
     {"0450_DATA_BASE_GVMSPACE", 0x064C3F80},
     {"0450_KERNEL_OFF_CODE_CAVE",    0x0044000},
-    {"0450_PPR_SYSENT",        0x0D709C0},  // untested
+    {"0450_PPR_SYSENT",        0x0D709C0},
     {"0450_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0450_A53_MDBG_BL_VA",      0x109854},
+    {"0450_IOMMU_SOFTC",         0x33C7680},
     {"0450_A53_GET_VERSION_VA",  0x110288},
 
     // FW 4.51
@@ -545,6 +554,7 @@ static const std::unordered_map<std::string, uint64_t> fw_offsets = {
     {"0451_PPR_SYSENT",        0x0D709C0},  // untested
     {"0451_GADGET_JMP_PTR_RSI",  0x0042000},
     {"0451_A53_MDBG_BL_VA",      0x109854},
+    {"0451_IOMMU_SOFTC",         0x33C7680},
     {"0451_A53_GET_VERSION_VA",  0x110288},
 };
 
