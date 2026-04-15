@@ -1,7 +1,8 @@
 #pragma once
 #include <cstdint>
 #include <cstring>
-#include <print>
+#include <cstdio>
+
 #include "util.h"
 
 // Command buffer MMIO offsets
@@ -22,16 +23,18 @@ struct iommu_ctx {
     uint64_t mmio_va;   // DMAP VA of IOMMU MMIO base
 };
 
+#define print(fmt, ...) printf(fmt, ##__VA_ARGS__)
+
 static inline int iommu_init(iommu_ctx *ctx, uint64_t dmap, uint64_t kbase, uint32_t fw) {
     uint64_t softc_off = fw_off(fw, "IOMMU_SOFTC");
     if (!softc_off) {
-        std::print("[iommu] no IOMMU_SOFTC offset for fw 0x{:04x}\n", fw);
+        print("[iommu] no IOMMU_SOFTC offset for fw 0x%04x\n", fw);
         return -1;
     }
 
     uint64_t softc = kr8(kbase + softc_off);
     if (!softc) {
-        std::print("[iommu] softc is NULL\n");
+        print("[iommu] softc is NULL\n");
         return -2;
     }
 
@@ -39,12 +42,12 @@ static inline int iommu_init(iommu_ctx *ctx, uint64_t dmap, uint64_t kbase, uint
     ctx->cb_base = kr8(softc + IOMMU_SC_CB1_PTR);
 
     if (!ctx->cb_base || !ctx->mmio_va) {
-        std::print("[iommu] cb_base=0x{:x} mmio=0x{:x} - not initialized\n",
+        print("[iommu] cb_base=0x%lx mmio=0x%lx - not initialized\n",
             ctx->cb_base, ctx->mmio_va);
         return -3;
     }
 
-    std::print("[iommu] softc=0x{:x} cb=0x{:x} mmio=0x{:x}\n",
+    print("[iommu] softc=0x%lx cb=0x%lx mmio=0x%lx\n",
         softc, ctx->cb_base, ctx->mmio_va);
     return 0;
 }
