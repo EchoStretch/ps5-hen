@@ -1,4 +1,4 @@
-#include <print>
+#include <cstdio>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -24,6 +24,7 @@ extern "C" {
     int sceKernelSleep(int secs);
 }
 
+#define print(fmt, ...) printf(fmt, ##__VA_ARGS__)
 
 static struct gpu_ctx s_gpu = {0};
 static struct gpu_kernel_offsets s_gpu_offsets = {0};
@@ -174,14 +175,14 @@ static uint64_t gpu_alloc_dmem(uint64_t size, int gpu_write)
 
     int ret = sceKernelAllocateMainDirectMemory(size, size, 1, &phys_out);
     if (ret != 0) {
-        std::print("[gpu] sceKernelAllocateMainDirectMemory failed: 0x{:x}\n", ret);
+        print("[gpu] sceKernelAllocateMainDirectMemory failed: 0x%x\n", ret);
         return 0;
     }
 
     ret = sceKernelMapNamedDirectMemory(&va_out, size, prot,
                                         MAP_NO_COALESCE, phys_out, size, "gpudma");
     if (ret != 0) {
-        std::print("[gpu] sceKernelMapNamedDirectMemory failed: 0x{:x}\n", ret);
+        print("[gpu] sceKernelMapNamedDirectMemory failed: 0x%x\n", ret);
         return 0;
     }
 
@@ -255,7 +256,7 @@ static int gpu_transfer_physical(uint64_t phys_addr, void *local_buf,
     uint64_t offset = phys_addr - aligned_pa;
 
     if (offset + size > s_gpu.dmem_size) {
-        std::print("[gpu] transfer exceeds dmem_size\n");
+        print("[gpu] transfer exceeds dmem_size\n");
         return -1;
     }
 
@@ -290,7 +291,7 @@ static int gpu_transfer_physical(uint64_t phys_addr, void *local_buf,
 
     int ret = gpu_submit_commands(s_gpu.fd, 0, 1, desc_va);
     if (ret != 0) {
-        std::print("[gpu] ioctl submit failed: {:d}\n", ret);
+        print("[gpu] ioctl submit failed: %d\n", ret);
         return -1;
     }
 
@@ -313,74 +314,74 @@ static int gpu_transfer_physical(uint64_t phys_addr, void *local_buf,
 int gpu_init(void)
 {
     if (s_gpu.initialized) {
-        std::print("[gpu] Already initialized\n");
+        print("[gpu] Already initialized\n");
         return 0;
     }
 
     if (!s_offsets_set) {
-        std::print("[gpu] ERROR: call gpu_set_offsets() first\n");
+        print("[gpu] ERROR: call gpu_set_offsets() first\n");
         return -1;
     }
 
-    std::print("[gpu] init\n");
+    print("[gpu] init\n");
 
     s_gpu.dmem_size = 2 * 0x100000;  // 2MB
 
     // Step 1: Open GPU device
-    std::print("[gpu] Opening /dev/gc\n");
+    print("[gpu] Opening /dev/gc\n");
     s_gpu.fd = open("/dev/gc", O_RDWR);
     if (s_gpu.fd < 0) {
-        std::print("[gpu] ERROR: failed to open /dev/gc (fd={:d})\n", s_gpu.fd);
+        print("[gpu] ERROR: failed to open /dev/gc (fd=%d)\n", s_gpu.fd);
         return -1;
     }
-    std::print("[gpu] /dev/gc fd={:d}\n", s_gpu.fd);
+    print("[gpu] /dev/gc fd=%d\n", s_gpu.fd);
 
     // Step 2: Allocate 3 GPU-mapped buffers
-    std::print("[gpu] Allocating GPU direct memory (3 x 2MB)\n");
+    print("[gpu] Allocating GPU direct memory (3 x 2MB)\n");
 
     s_gpu.victim_va = gpu_alloc_dmem(s_gpu.dmem_size, 1);
-    if (!s_gpu.victim_va) { std::print("[gpu] victim alloc failed\n"); return -2; }
+    if (!s_gpu.victim_va) { print("[gpu] victim alloc failed\n"); return -2; }
 
     s_gpu.transfer_va = gpu_alloc_dmem(s_gpu.dmem_size, 1);
-    if (!s_gpu.transfer_va) { std::print("[gpu] transfer alloc failed\n"); return -2; }
+    if (!s_gpu.transfer_va) { print("[gpu] transfer alloc failed\n"); return -2; }
 
     s_gpu.cmd_va = gpu_alloc_dmem(s_gpu.dmem_size, 1);
-    if (!s_gpu.cmd_va) { std::print("[gpu] cmd alloc failed\n"); return -2; }
+    if (!s_gpu.cmd_va) { print("[gpu] cmd alloc failed\n"); return -2; }
 
-    std::print("[gpu] victim_va   = 0x{:x}\n", s_gpu.victim_va);
-    std::print("[gpu] transfer_va = 0x{:x}\n", s_gpu.transfer_va);
-    std::print("[gpu] cmd_va      = 0x{:x}\n", s_gpu.cmd_va);
+    print("[gpu] victim_va   = 0x%lx\n", s_gpu.victim_va);
+    print("[gpu] transfer_va = 0x%lx\n", s_gpu.transfer_va);
+    print("[gpu] cmd_va      = 0x%lx\n", s_gpu.cmd_va);
 
     // Step 3: Get the physical address of the victim buffer
     s_gpu.victim_real_pa = pmap_kextract(s_gpu.victim_va);
-    std::print("[gpu] victim_real_pa = 0x{:x}\n", s_gpu.victim_real_pa);
+    print("[gpu] victim_real_pa = 0x%lx\n", s_gpu.victim_real_pa);
 
     // Step 4: Walk GPU page tables to find the PTE for the victim buffer
     int vmid = gpu_get_vmid();
-    std::print("[gpu] GPU VMID = {:d}\n", vmid);
+    print("[gpu] GPU VMID = %d\n", vmid);
 
     if (s_gpu_offsets.data_base_gvmspace == 0) {
-        std::print("[gpu] ERROR: data_base_gvmspace not set\n");
+        print("[gpu] ERROR: data_base_gvmspace not set\n");
         return -3;
     }
 
     uint64_t rel_va = gpu_get_relative_va(vmid, s_gpu.victim_va);
     if (rel_va == (uint64_t)-1) {
-        std::print("[gpu] ERROR: could not get relative VA for victim\n");
+        print("[gpu] ERROR: could not get relative VA for victim\n");
         return -3;
     }
-    std::print("[gpu] victim relative GPU VA = 0x{:x}\n", rel_va);
+    print("[gpu] victim relative GPU VA = 0x%lx\n", rel_va);
 
     s_gpu.victim_ptbe_va = gpu_walk_pt(vmid, rel_va, &s_gpu.page_size);
     if (s_gpu.victim_ptbe_va == 0) {
-        std::print("[gpu] ERROR: GPU page table walk failed\n");
+        print("[gpu] ERROR: GPU page table walk failed\n");
         return -4;
     }
-    std::print("[gpu] victim GPU PTE VA  = 0x{:x}\n", s_gpu.victim_ptbe_va);
-    std::print("[gpu] victim GPU page sz = 0x{:x}\n", s_gpu.page_size);
+    print("[gpu] victim GPU PTE VA  = 0x%lx\n", s_gpu.victim_ptbe_va);
+    print("[gpu] victim GPU page sz = 0x%lx\n", s_gpu.page_size);
 
     if (s_gpu.page_size != s_gpu.dmem_size) {
-        std::print("[gpu] WARNING: page size 0x{:x} != dmem_size 0x{:x}\n",
+        print("[gpu] WARNING: page size 0x%lx != dmem_size 0x%lx\n",
                  s_gpu.page_size, s_gpu.dmem_size);
     }
 
@@ -392,14 +393,14 @@ int gpu_init(void)
     kernel_copyout(s_gpu.victim_ptbe_va, &current_ptbe, sizeof(current_ptbe));
     s_gpu.cleared_ptbe = current_ptbe & ~s_gpu.victim_real_pa;
 
-    std::print("[gpu] current PTE = 0x{:x}\n", current_ptbe);
-    std::print("[gpu] cleared PTE = 0x{:x}\n", s_gpu.cleared_ptbe);
+    print("[gpu] current PTE = 0x%lx\n", current_ptbe);
+    print("[gpu] cleared PTE = 0x%lx\n", s_gpu.cleared_ptbe);
 
     int prot_rw = prot_ro | PROT_GPU_WRITE;
     mprotect((void *)s_gpu.victim_va, s_gpu.dmem_size, prot_rw);
 
     s_gpu.initialized = 1;
-    std::print("[gpu] ready\n");
+    print("[gpu] ready\n");
     return 0;
 }
 
@@ -447,5 +448,5 @@ void gpu_cleanup(void)
     }
 
     s_gpu.initialized = 0;
-    std::print("[gpu] Cleaned up\n");
+    print("[gpu] Cleaned up\n");
 }
